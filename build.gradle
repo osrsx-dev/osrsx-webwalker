@@ -3,8 +3,8 @@ apply plugin: 'io.osrsx.plugin'
 osrsxPlugin {
     id = 'webwalker'
     group = 'io.osrsx.plugins'
-    version = '1.0.0'
-    apiVersion = '0.15.0'   // needs routeView/globalRoute, worldMap, Gfx2D.objectPicker/inputInt3 (SDK 0.15.0)
+    version = '1.1.0'
+    apiVersion = '0.16.0'   // needs Gfx2D section/field/searchPicker/textWrapped (SDK 0.16.0)
     name = 'Web Walker'
     description = 'Drive the global web walker: a control panel with location/NPC/object lookups, an in-world route overlay, and a right-click "Walk here" on the world map.'
     authors = ['osrsx']

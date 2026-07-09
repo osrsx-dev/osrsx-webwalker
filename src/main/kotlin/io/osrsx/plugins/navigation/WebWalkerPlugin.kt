@@ -11,6 +11,7 @@ import io.osrsx.plugin.Gfx2D
 import io.osrsx.plugin.Gfx3D
 import io.osrsx.plugin.HasMenu
 import io.osrsx.plugin.HasOverlay
+import io.osrsx.plugin.HasPanel
 import io.osrsx.plugin.MenuIcon
 import io.osrsx.plugin.MenuItem
 import io.osrsx.plugin.Plugin
@@ -20,10 +21,12 @@ import io.osrsx.plugin.PluginDescriptor
  * Drives the global web walker from a docked sidebar panel — the standalone successor to the in-core Web
  * Walker plugin, built entirely on the public osrsx SDK.
  *
- * The panel ([onMenu]) is a game-engine-style control surface: an inline **X / Y / Z** tile field, plus
- * **location**, **NPC** and **object** lookups (our searchable pickers) that resolve to a nearby tile and
- * walk there on click. The in-world route is drawn through [HasOverlay] via [webWalking].routeView(), and a
- * right-click **"Walk here"** is contributed to the world map through the SDK's [worldMap] service.
+ * The panel ([onMenu]) is a game-engine-style control surface laid out in framed sections: an inline
+ * **X / Y / Z** tile field with a **Start/Stop** button, plus **location** (autocomplete), **NPC** and
+ * **object** lookups that *populate* the tile field (press Start to walk). The in-world route is drawn
+ * through [HasOverlay] via [webWalking].routeView(), a right-click **"Walk here"** is contributed to the
+ * world map via the SDK [worldMap] service, and the event log can be **popped out** into a floating
+ * window ([HasPanel]).
  *
  * The panel shows/hides with the plugin itself (the sidebar item follows the enabled state — no "show
  * window" toggle), and the walker engine lives in the client; this plugin only observes and drives it.
@@ -35,7 +38,7 @@ import io.osrsx.plugin.PluginDescriptor
     tags = ["navigation", "utility", "walking"],
     enabledByDefault = true,
 )
-class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay {
+class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
 
     object Config : PluginConfig("webwalker") {
         var routeOverlay by boolItem(
@@ -55,17 +58,18 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay {
 
     // ---- walk state ----
     @Volatile private var walkingActive = false
+    @Volatile private var walkPopped = false
+    @Volatile private var findPopped = false
+    @Volatile private var eventsPopped = false
     private var dx = 3164 // Grand Exchange, a sensible default destination
     private var dy = 3486
     private var dz = 0
     private fun dest() = Tile(dx, dy, dz)
 
-    // ---- lookup selections (resolved tile cached until the selection changes) ----
-    private var locQuery = ""
+    // ---- lookup selections ----
+    private var locName = ""
     private var npcSel = -1
-    private var npcTile: Tile? = null
     private var objSel = -1
-    private var objTile: Tile? = null
 
     // ---- event log ----
     private val eventLog = ArrayDeque<String>()
@@ -90,16 +94,19 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay {
     /** Add/remove the world-map "Walk here" option to match the current config. */
     private fun updateWorldMapOption() {
         if (Config.worldMapWalkHere && worldMapSub == null) {
-            worldMapSub = worldMap.addMenuOption("Walk here") { navigateTo(it) }
+            // The world-map "Walk here" is an explicit action, so it both sets the tile AND starts walking.
+            worldMapSub = worldMap.addMenuOption("Walk here") { setDest(it); walkingActive = true }
         } else if (!Config.worldMapWalkHere && worldMapSub != null) {
             worldMapSub?.unsubscribe(); worldMapSub = null
         }
     }
 
-    /** Set the destination to [tile] and start walking there. */
-    private fun navigateTo(tile: Tile) {
-        dx = tile.x; dy = tile.y; dz = tile.plane
-        walkingActive = true
+    /** Populate the destination tile (does NOT start walking — the Start button does). */
+    private fun setDest(tile: Tile) { dx = tile.x; dy = tile.y; dz = tile.plane }
+
+    private fun toggleWalk() {
+        walkingActive = !walkingActive
+        if (!walkingActive) webWalking.stop() // truly cancel: clear the plan/detour, reset to IDLE
     }
 
     override fun onLoop(): Long {
@@ -107,8 +114,12 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay {
         if (worldMap.isOpen()) return 250 // the map covers the screen — wait for it to close
         val d = dest()
         if (webWalking.arrived(d)) { walkingActive = false; return 300 }
-        if (webWalking.state().phase == WalkPhase.FAILED) { walkingActive = false; return 400 }
+        // Drive the walk FIRST, then read the phase. The engine's WalkState.phase is global and sticky: after a
+        // failed route it stays FAILED until the next walkTo re-plans. Checking it *before* walkTo would abort a
+        // brand-new destination on the stale FAILED and the walker would "refuse to route anywhere else". walkTo(d)
+        // transitions a fresh dest to PLANNING first, so the check below only trips on a real failure of THIS dest.
         webWalking.walkTo(d)
+        if (webWalking.state().phase == WalkPhase.FAILED) { walkingActive = false; return 500 }
         return 900
     }
 
@@ -124,51 +135,66 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay {
     override fun onMenu(gfx: Gfx2D) {
         val st = webWalking.state()
 
-        // Status
-        gfx.textColored(phaseColor(st.phase), "● ${st.phase}")
-        gfx.text(st.message)
-        st.destination?.let { gfx.textColored(DIM, "Destination  ${it.x}, ${it.y}, ${it.plane}") }
-        gfx.separator()
-
-        // Manual walk — inline X / Y / Z vector field
-        gfx.text("Walk to tile")
-        val xyz = gfx.inputInt3("", dx, dy, dz)
-        dx = xyz[0]; dy = xyz[1]; dz = xyz[2]
-        if (gfx.button(if (walkingActive) "Stop walking" else "Walk to destination")) walkingActive = !walkingActive
-        gfx.separator()
-
-        // Location lookup
-        gfx.text("Find a place")
-        locQuery = gfx.inputText("##ww_loc", locQuery)
-        gfx.sameLine()
-        if (gfx.button("Go##loc") && locQuery.isNotBlank()) locations.nearest(locQuery)?.let { navigateTo(it) }
-
-        // NPC lookup
-        gfx.text("Find an NPC")
-        val ns = gfx.npcPicker("ww_npc", npcSel)
-        if (ns != npcSel) { npcSel = ns; npcTile = if (ns >= 0) locations.nearestNpc(ns) else null }
-        npcTile?.let { t ->
-            gfx.textColored(DIM, "→ ${t.x}, ${t.y}, ${t.plane}")
-            gfx.sameLine()
-            if (gfx.button("Walk here##npc")) navigateTo(t)
+        gfx.section("Status") { g ->
+            g.textColored(phaseColor(st.phase), st.phase.toString())
+            g.textWrapped(st.message)
         }
 
-        // Object lookup
-        gfx.text("Find an object")
-        val os = gfx.objectPicker("ww_obj", objSel)
-        if (os != objSel) { objSel = os; objTile = if (os >= 0) locations.nearestObject(os) else null }
-        objTile?.let { t ->
-            gfx.textColored(DIM, "→ ${t.x}, ${t.y}, ${t.plane}")
-            gfx.sameLine()
-            if (gfx.button("Walk here##obj")) navigateTo(t)
-        }
-        gfx.separator()
+        // Each of these sections can be popped out into its own floating window via the pop-out icon notched
+        // into its top-right border. While popped, the section is drawn only in the overlay ([onPanel]).
+        if (!walkPopped && gfx.section("Walk to tile", POP_OUT) { g -> renderWalkToTile(g) }) walkPopped = true
+        if (!findPopped && gfx.section("Find a destination", POP_OUT) { g -> renderFind(g) }) findPopped = true
+        if (!eventsPopped && gfx.section("Recent events", POP_OUT) { g -> renderEvents(g) }) eventsPopped = true
+    }
 
-        // Event log (most recent first)
-        gfx.text("Recent events")
+    /** Popped-out sections, each in its own floating window (HasPanel) with a pin icon in the header to dock. */
+    override fun onPanel(gfx: Gfx2D) {
+        if (walkPopped && popWindow(gfx, "Walk to tile") { renderWalkToTile(it) }) walkPopped = false
+        if (findPopped && popWindow(gfx, "Find a destination") { renderFind(it) }) findPopped = false
+        if (eventsPopped && popWindow(gfx, "Recent events") { renderEvents(it) }) eventsPopped = false
+    }
+
+    /** Draw [title] as a fixed-width floating window; @return true if its header dock icon was clicked. The
+     *  section fields render standalone (no wrapping frame) — the window title bar carries the dock icon. */
+    private fun popWindow(gfx: Gfx2D, title: String, body: (Gfx2D) -> Unit): Boolean {
+        var dock = false
+        gfx.setNextWindowSize(POP_W, POP_H)
+        gfx.overlay(title) { g ->
+            if (g.headerButton(DOCK)) dock = true
+            body(g)
+        }
+        return dock
+    }
+
+    // ---- section bodies (shared by the docked menu and the popped-out windows) ----
+    private fun renderWalkToTile(g: Gfx2D) {
+        g.field("Tile (X / Y / Z)") { f ->
+            val xyz = f.inputInt3("", dx, dy, dz)
+            dx = xyz[0]; dy = xyz[1]; dz = xyz[2]
+        }
+        if (g.button(if (walkingActive) "Stop" else "Start", true)) toggleWalk()
+    }
+
+    private fun renderFind(g: Gfx2D) {
+        g.field("Location") { f ->
+            val picked = f.searchPicker("ww_loc", LOCATION_NAMES, locName, "Search a place…")
+            if (picked != locName) { locName = picked; LOCATIONS[picked]?.let { setDest(it) } }
+        }
+        g.field("NPC") { f ->
+            val ns = f.npcPicker("ww_npc", npcSel)
+            if (ns != npcSel) { npcSel = ns; if (ns >= 0) locations.nearestNpc(ns)?.let { setDest(it) } }
+        }
+        g.field("Object") { f ->
+            val os = f.objectPicker("ww_obj", objSel)
+            if (os != objSel) { objSel = os; if (os >= 0) locations.nearestObject(os)?.let { setDest(it) } }
+        }
+    }
+
+    /** The event log, drawn most-recent-first. */
+    private fun renderEvents(g: Gfx2D) {
         val recent = synchronized(eventLog) { eventLog.toList() }
-        if (recent.isEmpty()) gfx.textColored(DIM, "—")
-        else for (line in recent.asReversed().take(8)) gfx.textColored(DIM, line)
+        if (recent.isEmpty()) g.textColored(DIM, "No events yet")
+        else for (line in recent.asReversed().take(12)) g.textWrappedColored(DIM, line)
     }
 
     private fun phaseColor(phase: WalkPhase): Int = when (phase) {
@@ -233,6 +259,10 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay {
 
     private companion object {
         const val LOG_CAP = 40
+        val POP_OUT = MenuIcon.custom(0xF065) // expand (arrows-out) — pop the section into a window
+        val DOCK = MenuIcon.custom(0xF066)    // compress (arrows-in) — dock the window back into the menu
+        const val POP_W = 340f                // ~half the previous width (the standard panel width)
+        const val POP_H = 300f
 
         // Panel status colours (0xAARRGGBB).
         const val DIM = 0xFF9AA0B0.toInt()
@@ -246,5 +276,47 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay {
         const val SHORTCUT = 0xFFFFC24B.toInt() // amber transports/shortcuts
         const val LABEL = 0xFFEAEAEA.toInt()
         const val DEST = 0xFF5AE07A.toInt()      // green destination tile
+
+        /** Curated well-known OSRS destinations for the location autocomplete → the walker routes to the tile.
+         *  (Interim; a wiki-sourced location table baked into osrsx.db + exposed via the SDK is planned.) */
+        val LOCATIONS: Map<String, Tile> = linkedMapOf(
+            "Grand Exchange" to Tile(3164, 3486, 0),
+            "Varrock Square" to Tile(3213, 3423, 0),
+            "Varrock West Bank" to Tile(3183, 3436, 0),
+            "Varrock East Bank" to Tile(3253, 3420, 0),
+            "Lumbridge Castle" to Tile(3222, 3218, 0),
+            "Draynor Village Bank" to Tile(3092, 3243, 0),
+            "Falador Square" to Tile(2965, 3380, 0),
+            "Falador East Bank" to Tile(3013, 3355, 0),
+            "Falador West Bank" to Tile(2946, 3368, 0),
+            "Edgeville Bank" to Tile(3094, 3491, 0),
+            "Barbarian Village" to Tile(3082, 3420, 0),
+            "Al Kharid Bank" to Tile(3270, 3167, 0),
+            "Port Sarim" to Tile(3025, 3210, 0),
+            "Rimmington" to Tile(2957, 3215, 0),
+            "Karamja (Musa Point)" to Tile(2916, 3162, 0),
+            "Crafting Guild" to Tile(2933, 3288, 0),
+            "Draynor Manor" to Tile(3109, 3355, 0),
+            "Wizards' Tower" to Tile(3110, 3167, 0),
+            "Camelot Castle" to Tile(2757, 3477, 0),
+            "Seers' Village Bank" to Tile(2725, 3491, 0),
+            "Catherby Bank" to Tile(2809, 3440, 0),
+            "Ardougne South Bank" to Tile(2655, 3283, 0),
+            "Ardougne North Bank" to Tile(2617, 3332, 0),
+            "Yanille Bank" to Tile(2612, 3093, 0),
+            "Fishing Guild" to Tile(2612, 3391, 0),
+            "Warriors' Guild" to Tile(2846, 3540, 0),
+            "Burthorpe" to Tile(2898, 3545, 0),
+            "Taverley" to Tile(2894, 3428, 0),
+            "Grand Tree (Gnome Stronghold)" to Tile(2465, 3495, 0),
+            "Tree Gnome Village" to Tile(2540, 3170, 0),
+            "Castle Wars" to Tile(2440, 3090, 0),
+            "Canifis" to Tile(3495, 3488, 0),
+            "Rellekka" to Tile(2660, 3660, 0),
+            "Emir's Arena" to Tile(3315, 3235, 0),
+            "Mining Guild (Falador)" to Tile(3046, 3339, 0),
+            "Corsair Cove" to Tile(2567, 2858, 0),
+        )
+        val LOCATION_NAMES: List<String> = LOCATIONS.keys.toList()
     }
 }
