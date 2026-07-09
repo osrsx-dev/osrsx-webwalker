@@ -71,6 +71,16 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
     private var npcSel = -1
     private var objSel = -1
 
+    // ---- named-place catalog (world-map labels + teleport destinations), loaded once from the SDK ----
+    private var placeNames: List<String> = emptyList()
+    private var placesByName: Map<String, Tile> = emptyMap()
+    private fun ensurePlaces() {
+        if (placeNames.isNotEmpty()) return
+        val ps = locations.places() // already name-ordered
+        placesByName = ps.associate { it.name to it.tile }
+        placeNames = ps.map { it.name }
+    }
+
     // ---- event log ----
     private val eventLog = ArrayDeque<String>()
     private var walkListener: WalkListener? = null
@@ -177,8 +187,9 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
 
     private fun renderFind(g: Gfx2D) {
         g.field("Location") { f ->
-            val picked = f.searchPicker("ww_loc", LOCATION_NAMES, locName, "Search a place…")
-            if (picked != locName) { locName = picked; LOCATIONS[picked]?.let { setDest(it) } }
+            ensurePlaces()
+            val picked = f.searchPicker("ww_loc", placeNames, locName, "Search a place…")
+            if (picked != locName) { locName = picked; placesByName[picked]?.let { setDest(it) } }
         }
         g.field("NPC") { f ->
             val ns = f.npcPicker("ww_npc", npcSel)
@@ -277,46 +288,5 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
         const val LABEL = 0xFFEAEAEA.toInt()
         const val DEST = 0xFF5AE07A.toInt()      // green destination tile
 
-        /** Curated well-known OSRS destinations for the location autocomplete → the walker routes to the tile.
-         *  (Interim; a wiki-sourced location table baked into osrsx.db + exposed via the SDK is planned.) */
-        val LOCATIONS: Map<String, Tile> = linkedMapOf(
-            "Grand Exchange" to Tile(3164, 3486, 0),
-            "Varrock Square" to Tile(3213, 3423, 0),
-            "Varrock West Bank" to Tile(3183, 3436, 0),
-            "Varrock East Bank" to Tile(3253, 3420, 0),
-            "Lumbridge Castle" to Tile(3222, 3218, 0),
-            "Draynor Village Bank" to Tile(3092, 3243, 0),
-            "Falador Square" to Tile(2965, 3380, 0),
-            "Falador East Bank" to Tile(3013, 3355, 0),
-            "Falador West Bank" to Tile(2946, 3368, 0),
-            "Edgeville Bank" to Tile(3094, 3491, 0),
-            "Barbarian Village" to Tile(3082, 3420, 0),
-            "Al Kharid Bank" to Tile(3270, 3167, 0),
-            "Port Sarim" to Tile(3025, 3210, 0),
-            "Rimmington" to Tile(2957, 3215, 0),
-            "Karamja (Musa Point)" to Tile(2916, 3162, 0),
-            "Crafting Guild" to Tile(2933, 3288, 0),
-            "Draynor Manor" to Tile(3109, 3355, 0),
-            "Wizards' Tower" to Tile(3110, 3167, 0),
-            "Camelot Castle" to Tile(2757, 3477, 0),
-            "Seers' Village Bank" to Tile(2725, 3491, 0),
-            "Catherby Bank" to Tile(2809, 3440, 0),
-            "Ardougne South Bank" to Tile(2655, 3283, 0),
-            "Ardougne North Bank" to Tile(2617, 3332, 0),
-            "Yanille Bank" to Tile(2612, 3093, 0),
-            "Fishing Guild" to Tile(2612, 3391, 0),
-            "Warriors' Guild" to Tile(2846, 3540, 0),
-            "Burthorpe" to Tile(2898, 3545, 0),
-            "Taverley" to Tile(2894, 3428, 0),
-            "Grand Tree (Gnome Stronghold)" to Tile(2465, 3495, 0),
-            "Tree Gnome Village" to Tile(2540, 3170, 0),
-            "Castle Wars" to Tile(2440, 3090, 0),
-            "Canifis" to Tile(3495, 3488, 0),
-            "Rellekka" to Tile(2660, 3660, 0),
-            "Emir's Arena" to Tile(3315, 3235, 0),
-            "Mining Guild (Falador)" to Tile(3046, 3339, 0),
-            "Corsair Cove" to Tile(2567, 2858, 0),
-        )
-        val LOCATION_NAMES: List<String> = LOCATIONS.keys.toList()
     }
 }
