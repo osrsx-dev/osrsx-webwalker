@@ -199,6 +199,10 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
             val os = f.objectPicker("ww_obj", objSel)
             if (os != objSel) { objSel = os; if (os >= 0) locations.nearestObject(os)?.let { setDest(it) } }
         }
+        // Locate the nearest bank we can ACTUALLY reach (off the render thread — nearestBank pathfinds).
+        if (g.button("Nearest bank", true)) {
+            Thread({ webWalking.nearestBank()?.let { setDest(it) } }, "ww-nearest-bank").apply { isDaemon = true }.start()
+        }
     }
 
     /** The event log, drawn most-recent-first. */
