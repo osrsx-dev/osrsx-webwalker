@@ -15,7 +15,6 @@ import io.osrsx.plugin.HasPanel
 import io.osrsx.plugin.MenuIcon
 import io.osrsx.plugin.MenuItem
 import io.osrsx.plugin.Plugin
-import io.osrsx.plugin.PluginDescriptor
 
 /**
  * Drives the global web walker from a docked sidebar panel — the standalone successor to the in-core Web
@@ -31,13 +30,6 @@ import io.osrsx.plugin.PluginDescriptor
  * The panel shows/hides with the plugin itself (the sidebar item follows the enabled state — no "show
  * window" toggle), and the walker engine lives in the client; this plugin only observes and drives it.
  */
-@PluginDescriptor(
-    name = "Web Walker",
-    description = "Control panel + route overlay + world-map \"Walk here\" for the global web walker.",
-    author = "osrsx",
-    tags = ["navigation", "utility", "walking"],
-    enabledByDefault = true,
-)
 class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
 
     object Config : PluginConfig("webwalker") {
@@ -198,6 +190,10 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
         g.field("Object") { f ->
             val os = f.objectPicker("ww_obj", objSel)
             if (os != objSel) { objSel = os; if (os >= 0) locations.nearestObject(os)?.let { setDest(it) } }
+        }
+        // Locate the nearest bank we can ACTUALLY reach (off the render thread — nearestBank pathfinds).
+        if (g.button("Nearest bank", true)) {
+            Thread({ webWalking.nearestBank()?.let { setDest(it) } }, "ww-nearest-bank").apply { isDaemon = true }.start()
         }
     }
 
