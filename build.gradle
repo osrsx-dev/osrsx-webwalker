@@ -2,6 +2,10 @@ apply plugin: 'io.osrsx.plugin'
 
 osrsxPlugin {
     id = 'webwalker'
+    main = 'io.osrsx.plugins.navigation.WebWalkerPlugin'
+    enabledByDefault = true
+    main = 'io.osrsx.plugins.navigation.WebWalkerPlugin'
+    enabledByDefault = true
     group = 'io.osrsx.plugins'
     version = '1.2.1'
     apiVersion = '0.16.1'   // needs Locations.places() + the Gfx2D panel toolkit (SDK 0.16.1)
