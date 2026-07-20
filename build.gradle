@@ -4,11 +4,9 @@ osrsxPlugin {
     id = 'webwalker'
     main = 'io.osrsx.plugins.navigation.WebWalkerPlugin'
     enabledByDefault = true
-    main = 'io.osrsx.plugins.navigation.WebWalkerPlugin'
-    enabledByDefault = true
     group = 'io.osrsx.plugins'
-    version = '1.2.1'
-    apiVersion = '0.16.1'   // needs Locations.places() + the Gfx2D panel toolkit (SDK 0.16.1)
+    version = '1.3.0'
+    apiVersion = '0.28.0'   // needs the self-driving Navigator surface: walker.global (was webWalking), NavPhase
     name = 'Web Walker'
     description = 'Drive the global web walker: a control panel with location/NPC/object lookups, an in-world route overlay, and a right-click "Walk here" on the world map.'
     authors = ['osrsx']
