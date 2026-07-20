@@ -1,11 +1,10 @@
 package io.osrsx.plugins.navigation
 
+import io.osrsx.api.NavPhase
 import io.osrsx.api.RouteLeg
 import io.osrsx.api.Subscription
 import io.osrsx.api.Tile
 import io.osrsx.api.WalkEvent
-import io.osrsx.api.WalkListener
-import io.osrsx.api.WalkPhase
 import io.osrsx.config.PluginConfig
 import io.osrsx.plugin.Gfx2D
 import io.osrsx.plugin.Gfx3D
@@ -23,12 +22,17 @@ import io.osrsx.plugin.Plugin
  * The panel ([onMenu]) is a game-engine-style control surface laid out in framed sections: an inline
  * **X / Y / Z** tile field with a **Start/Stop** button, plus **location** (autocomplete), **NPC** and
  * **object** lookups that *populate* the tile field (press Start to walk). The in-world route is drawn
- * through [HasOverlay] via [webWalking].routeView(), a right-click **"Walk here"** is contributed to the
- * world map via the SDK [worldMap] service, and the event log can be **popped out** into a floating
+ * through [HasOverlay] via `walker.global.routeView()`, a right-click **"Walk here"** is contributed to
+ * the world map via the SDK [worldMap] service, and the event log can be **popped out** into a floating
  * window ([HasPanel]).
  *
  * The panel shows/hides with the plugin itself (the sidebar item follows the enabled state — no "show
  * window" toggle), and the walker engine lives in the client; this plugin only observes and drives it.
+ *
+ * Since SDK 0.28.0 the walker is a self-driving [io.osrsx.api.Navigator]: [nav].pathTo is called ONCE per
+ * destination and the engine's own driver advances every step until arrival, so this plugin has no
+ * [onLoop] at all. The Start/Stop button and the status line read the walker's live state rather than a
+ * local mirror of it — which also means the panel correctly reflects a walk another plugin started.
  */
 class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
 
@@ -48,8 +52,11 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
     // ---- sidebar menu item (visibility follows the plugin's enabled state) ----
     override fun menu() = MenuItem("Web Walker", MenuIcon.MAP)
 
+    /** The whole-map walker — the navigator this panel drives and observes. */
+    private val nav get() = walker.global
+
     // ---- walk state ----
-    @Volatile private var walkingActive = false
+    // No local "walking" mirror: the walker self-drives, so nav.isNavigating() IS the truth.
     @Volatile private var walkPopped = false
     @Volatile private var findPopped = false
     @Volatile private var eventsPopped = false
@@ -75,18 +82,17 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
 
     // ---- event log ----
     private val eventLog = ArrayDeque<String>()
-    private var walkListener: WalkListener? = null
     private var worldMapSub: Subscription? = null
 
     override fun onStart() {
-        walkListener = webWalking.addListener(WalkListener { logEvent(it) })
         updateWorldMapOption()
     }
 
     override fun onStop() {
-        walkListener?.let { webWalking.removeListener(it) }; walkListener = null
         worldMapSub?.unsubscribe(); worldMapSub = null
-        walkingActive = false
+        // The walker outlives this plugin, so leaving a walk running would strand it with no way to stop it
+        // from the panel — and the per-navigation listener we passed to pathTo would keep feeding a dead log.
+        if (nav.isNavigating()) nav.stop()
     }
 
     override fun onConfigChanged(key: String) {
@@ -97,7 +103,7 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
     private fun updateWorldMapOption() {
         if (Config.worldMapWalkHere && worldMapSub == null) {
             // The world-map "Walk here" is an explicit action, so it both sets the tile AND starts walking.
-            worldMapSub = worldMap.addMenuOption("Walk here") { setDest(it); walkingActive = true }
+            worldMapSub = worldMap.addMenuOption("Walk here") { setDest(it); startWalk() }
         } else if (!Config.worldMapWalkHere && worldMapSub != null) {
             worldMapSub?.unsubscribe(); worldMapSub = null
         }
@@ -107,26 +113,27 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
     private fun setDest(tile: Tile) { dx = tile.x; dy = tile.y; dz = tile.plane }
 
     private fun toggleWalk() {
-        walkingActive = !walkingActive
-        if (!walkingActive) webWalking.stop() // truly cancel: clear the plan/detour, reset to IDLE
+        if (nav.isNavigating()) nav.stop() // truly cancel: clear the plan/detour, reset to IDLE
+        else startWalk()
     }
 
-    override fun onLoop(): Long {
-        if (!walkingActive) return 300
-        if (worldMap.isOpen()) return 250 // the map covers the screen — wait for it to close
-        val d = dest()
-        if (webWalking.arrived(d)) { walkingActive = false; return 300 }
-        // Drive the walk FIRST, then read the phase. The engine's WalkState.phase is global and sticky: after a
-        // failed route it stays FAILED until the next walkTo re-plans. Checking it *before* walkTo would abort a
-        // brand-new destination on the stale FAILED and the walker would "refuse to route anywhere else". walkTo(d)
-        // transitions a fresh dest to PLANNING first, so the check below only trips on a real failure of THIS dest.
-        webWalking.walkTo(d)
-        if (webWalking.state().phase == WalkPhase.FAILED) { walkingActive = false; return 500 }
-        return 900
+    /**
+     * Hand the destination to the walker ONCE — it drives itself from here (planning, transports, bank/GE
+     * detours, re-planning) until it arrives or gives up. The listener lives for exactly this navigation;
+     * a later pathTo replaces both the target and the listener, so there is nothing to unsubscribe.
+     *
+     * This also retires the old sticky-FAILED workaround: a FAILED phase belonged to the *previous* walk and
+     * had to be read after re-pumping to avoid aborting a fresh destination. pathTo is one-shot, so a new
+     * destination simply starts a new navigation and the phase can never be stale.
+     */
+    private fun startWalk() {
+        nav.pathTo(dest()) { logEvent(it) }
     }
 
     private fun logEvent(@Suppress("UNUSED_PARAMETER") e: WalkEvent) {
-        val line = webWalking.state().message
+        // The engine folds each event into the state message it also shows in the Status section, so the log
+        // and the status line always agree; state() is updated before listeners fire, so this reads THIS event.
+        val line = nav.state().message
         synchronized(eventLog) {
             eventLog.addLast(line)
             while (eventLog.size > LOG_CAP) eventLog.removeFirst()
@@ -135,7 +142,7 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
 
     // ---- control panel ----
     override fun onMenu(gfx: Gfx2D) {
-        val st = webWalking.state()
+        val st = nav.state()
 
         gfx.section("Status") { g ->
             g.textColored(phaseColor(st.phase), st.phase.toString())
@@ -174,7 +181,7 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
             val xyz = f.inputInt3("", dx, dy, dz)
             dx = xyz[0]; dy = xyz[1]; dz = xyz[2]
         }
-        if (g.button(if (walkingActive) "Stop" else "Start", true)) toggleWalk()
+        if (g.button(if (nav.isNavigating()) "Stop" else "Start", true)) toggleWalk()
     }
 
     private fun renderFind(g: Gfx2D) {
@@ -193,7 +200,7 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
         }
         // Locate the nearest bank we can ACTUALLY reach (off the render thread — nearestBank pathfinds).
         if (g.button("Nearest bank", true)) {
-            Thread({ webWalking.nearestBank()?.let { setDest(it) } }, "ww-nearest-bank").apply { isDaemon = true }.start()
+            Thread({ nav.nearestBank()?.let { setDest(it) } }, "ww-nearest-bank").apply { isDaemon = true }.start()
         }
     }
 
@@ -204,17 +211,17 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
         else for (line in recent.asReversed().take(12)) g.textWrappedColored(DIM, line)
     }
 
-    private fun phaseColor(phase: WalkPhase): Int = when (phase) {
-        WalkPhase.FAILED, WalkPhase.STUCK -> BAD
-        WalkPhase.ARRIVED -> OK
-        WalkPhase.IDLE -> DIM
-        else -> ACTIVE
+    private fun phaseColor(phase: NavPhase): Int = when (phase) {
+        NavPhase.FAILED, NavPhase.STUCK -> BAD
+        NavPhase.ARRIVED -> OK
+        NavPhase.IDLE -> DIM
+        else -> ACTIVE // PLANNING / MOVING / TRANSPORT / DETOUR
     }
 
-    // ---- in-world route overlay (reproduces the old RouteOverlay via WebWalker.routeView) ----
+    // ---- in-world route overlay (reproduces the old RouteOverlay via GlobalWalker.routeView) ----
     override fun onOverlay(gfx: Gfx3D) {
         if (!Config.routeOverlay) return
-        val rv = webWalking.routeView() ?: return
+        val rv = nav.routeView() ?: return
 
         // The collision-aware local tile path to the current target.
         val path = rv.localPath
