@@ -127,7 +127,11 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
      * destination simply starts a new navigation and the phase can never be stale.
      */
     private fun startWalk() {
-        nav.pathTo(dest()) { logEvent(it) }
+        // Off the calling thread (the panel button is the RENDER thread; the world-map option the client
+        // thread): pathTo PLANS the route — a global search with multi-second budgets — same reason the
+        // Nearest-bank button already threads its pathfind. pathTo is one-shot and the engine's
+        // one-navigator interlock absorbs a rapid double-start (the newer request displaces the older).
+        Thread({ nav.pathTo(dest()) { logEvent(it) } }, "ww-start-walk").apply { isDaemon = true }.start()
     }
 
     private fun logEvent(@Suppress("UNUSED_PARAMETER") e: WalkEvent) {
