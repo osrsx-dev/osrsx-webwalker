@@ -1,11 +1,11 @@
 package io.osrsx.plugins.navigation
 
-import io.osrsx.api.NavPhase
-import io.osrsx.api.RouteLeg
-import io.osrsx.api.Subscription
-import io.osrsx.api.Tile
-import io.osrsx.api.WalkEvent
-import io.osrsx.config.PluginConfig
+import io.osrsx.api.movement.NavPhase
+import io.osrsx.api.movement.RouteLeg
+import io.osrsx.api.events.Subscription
+import io.osrsx.api.scene.Tile
+import io.osrsx.api.movement.WalkEvent
+import io.osrsx.plugin.PluginSettings
 import io.osrsx.plugin.Gfx2D
 import io.osrsx.plugin.Gfx3D
 import io.osrsx.plugin.HasMenu
@@ -29,14 +29,14 @@ import io.osrsx.plugin.Plugin
  * The panel shows/hides with the plugin itself (the sidebar item follows the enabled state — no "show
  * window" toggle), and the walker engine lives in the client; this plugin only observes and drives it.
  *
- * Since SDK 0.28.0 the walker is a self-driving [io.osrsx.api.Navigator]: [nav].pathTo is called ONCE per
+ * Since SDK 0.28.0 the walker is a self-driving [io.osrsx.api.movement.Navigator]: [nav].pathTo is called ONCE per
  * destination and the engine's own driver advances every step until arrival, so this plugin has no
  * [onLoop] at all. The Start/Stop button and the status line read the walker's live state rather than a
  * local mirror of it — which also means the panel correctly reflects a walk another plugin started.
  */
 class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
 
-    object Config : PluginConfig("webwalker") {
+    object Config : PluginSettings("webwalker") {
         var routeOverlay by boolItem(
             "routeOverlay", "Draw route overlay", true,
             "Draw the planned route in-world while walking.", section = "Overlay",
@@ -47,7 +47,7 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
         )
     }
 
-    override fun config() = Config
+    override fun settings() = Config
 
     // ---- sidebar menu item (visibility follows the plugin's enabled state) ----
     override fun menu() = MenuItem("Web Walker", MenuIcon.MAP)
@@ -95,7 +95,7 @@ class WebWalkerPlugin : Plugin(), HasMenu, HasOverlay, HasPanel {
         if (nav.isNavigating()) nav.stop()
     }
 
-    override fun onConfigChanged(key: String) {
+    override fun onSettingChanged(key: String) {
         if (key == "worldMapWalkHere") updateWorldMapOption()
     }
 
